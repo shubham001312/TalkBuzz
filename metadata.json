@@ -1,0 +1,6 @@
+{
+  "name": "TalkBuzz",
+  "description": "A lightweight, secure, and real-time messaging application featuring encrypted chats, file sharing, group conversations, push notifications, and a comprehensive admin panel.",
+  "requestFramePermissions": ["notifications"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
