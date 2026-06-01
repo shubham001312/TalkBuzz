@@ -322,7 +322,7 @@ export default function AdminPanel({
                       <tr key={u.id} className="hover:bg-slate-800/10 transition-colors">
                         <td className="p-4 flex items-center gap-3">
                           <img
-                            src={u.avatarUrl}
+                            src={u.avatarUrl || undefined}
                             alt=""
                             className="w-8 h-8 rounded-full border border-slate-800 object-cover"
                           />
@@ -433,7 +433,7 @@ export default function AdminPanel({
                       <tr key={c.id} className="hover:bg-slate-800/10 transition-colors">
                         <td className="p-4 flex items-center gap-3">
                           <img
-                            src={c.iconUrl}
+                            src={c.iconUrl || undefined}
                             alt=""
                             className="w-8 h-8 rounded-full border border-slate-800"
                           />

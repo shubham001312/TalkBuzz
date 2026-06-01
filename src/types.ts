@@ -31,6 +31,7 @@ export interface User {
   phone?: string;
   isTwoFactorEnabled?: boolean;
   twoFactorSecret?: string;
+  readReceipts?: boolean;
 }
 
 export interface Message {

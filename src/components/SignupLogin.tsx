@@ -537,7 +537,7 @@ export default function SignupLogin({ onLoginSuccess, users, onAddUser }: Signup
                   <label className="block text-xs font-mono text-[#9CA3AF] uppercase tracking-wider">Choose Profile Image</label>
                   <div className="flex items-center gap-4 bg-[#0A0C10] p-3 rounded-xl border border-slate-850">
                     <img
-                      src={avatarUrl}
+                      src={avatarUrl || undefined}
                       alt="Avatar Preview"
                       className="w-12 h-12 rounded-full border border-slate-700 object-cover"
                     />
@@ -583,7 +583,7 @@ export default function SignupLogin({ onLoginSuccess, users, onAddUser }: Signup
                             avatarUrl === p ? 'border-emerald-400 scale-110 shadow-[0_0_8px_rgba(52,211,153,0.3)]' : 'border-slate-850 hover:border-slate-700'
                           }`}
                         >
-                          <img src={p} className="w-full h-full object-cover" alt="" />
+                          <img src={p || undefined} className="w-full h-full object-cover" alt="" />
                         </button>
                       ))}
                     </div>

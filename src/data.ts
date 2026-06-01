@@ -20,6 +20,21 @@ export const INITIAL_USERS: User[] = [
     avatarUrl: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none"><rect width="100" height="100" rx="50" fill="%2310B981"/><circle cx="50" cy="40" r="18" fill="white" opacity="0.9"/><path d="M22 80c0-15 12-24 28-24s28 9 28 24" fill="white" opacity="0.9"/></svg>',
     bio: 'Founder & CEO of TalkBuzz. Building the future of lightweight, offline-first encrypted networks.',
     phone: '+1 (555) 012-3456'
+  },
+  {
+    id: 'user_bot_buzz',
+    email: 'buzz@talkbuzz.internal',
+    username: 'buzz',
+    displayName: 'Buzz AI Assistant',
+    role: UserRole.USER,
+    isActive: true,
+    lastSeen: new Date().toISOString(),
+    publicKey: 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA-BotBuzz',
+    avatarUrl: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none"><rect width="100" height="100" rx="50" fill="%2314b8a6"/><path d="M30 40h40v20H30V40z" fill="white" opacity="0.9"/><circle cx="40" cy="50" r="4" fill="%230F172A"/><circle cx="60" cy="50" r="4" fill="%230F172A"/><path d="M45 68h10v4H45v-4z" fill="white"/></svg>',
+    bio: 'Core AI routing kernel powered by Gemini. Ask me anything or let me assist you with encrypted channels.',
+    phone: '',
+    isTwoFactorEnabled: false,
+    twoFactorSecret: ''
   }
 ];
 

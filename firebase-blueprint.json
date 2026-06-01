@@ -1,0 +1,346 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile data representation in TalkBuzz.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier of the user account."
+        },
+        "email": {
+          "type": "string",
+          "description": "User email address."
+        },
+        "username": {
+          "type": "string",
+          "description": "Cleaned lowercase handle name."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "User profile display name."
+        },
+        "role": {
+          "type": "string",
+          "description": "User role: super_admin, admin, or user."
+        },
+        "isActive": {
+          "type": "boolean",
+          "description": "Active state flags."
+        },
+        "lastSeen": {
+          "type": "string",
+          "description": "Timestamp ISO of the last active state."
+        },
+        "publicKey": {
+          "type": "string",
+          "description": "PWA NACL Curve25519 identity key."
+        },
+        "avatarUrl": {
+          "type": "string",
+          "description": "Profile photo representation image."
+        },
+        "bio": {
+          "type": "string",
+          "description": "User biography blurb."
+        },
+        "phone": {
+          "type": "string",
+          "description": "User mobile phone."
+        },
+        "isTwoFactorEnabled": {
+          "type": "boolean",
+          "description": "Two factor state."
+        },
+        "twoFactorSecret": {
+          "type": "string",
+          "description": "Secret for TOTP algorithm."
+        }
+      },
+      "required": [
+        "id",
+        "email"
+      ]
+    },
+    "UserPassword": {
+      "title": "UserPassword",
+      "description": "User password details representation.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "description": "User email key."
+        },
+        "password": {
+          "type": "string",
+          "description": "User password raw hash/text string."
+        }
+      },
+      "required": [
+        "email",
+        "password"
+      ]
+    },
+    "Conversation": {
+      "title": "Conversation",
+      "description": "A conversation group or 1-to-1 chat session.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique conversation ID."
+        },
+        "isGroup": {
+          "type": "boolean",
+          "description": "True if group chat."
+        },
+        "name": {
+          "type": "string",
+          "description": "Optional name."
+        },
+        "iconUrl": {
+          "type": "string",
+          "description": "Optional group avatar link."
+        },
+        "memberIds": {
+          "type": "array",
+          "description": "A list of participant user IDs."
+        },
+        "adminIds": {
+          "type": "array",
+          "description": "Group administrators list."
+        },
+        "inviteLink": {
+          "type": "string",
+          "description": "Link to join the group."
+        },
+        "lastMessageAt": {
+          "type": "string",
+          "description": "ISO timestamp of last activity."
+        },
+        "pinned": {
+          "type": "boolean",
+          "description": "Pinned status."
+        },
+        "archived": {
+          "type": "boolean",
+          "description": "Archived status."
+        },
+        "muted": {
+          "type": "boolean",
+          "description": "Muted status."
+        },
+        "unreadCount": {
+          "type": "number",
+          "description": "Count of unread messages."
+        },
+        "participantId": {
+          "type": "string",
+          "description": "Direct chat buddy user ID."
+        }
+      },
+      "required": [
+        "id",
+        "isGroup"
+      ]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "A chat message within a session.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "conversationId": {
+          "type": "string"
+        },
+        "senderId": {
+          "type": "string"
+        },
+        "ciphertext": {
+          "type": "string"
+        },
+        "decryptedText": {
+          "type": "string"
+        },
+        "messageType": {
+          "type": "string"
+        },
+        "isDeleted": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "reactions": {
+          "type": "object"
+        },
+        "mediaMetadata": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "conversationId"
+      ]
+    },
+    "UserSession": {
+      "title": "UserSession",
+      "description": "Active web session telemetry.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "browser": {
+          "type": "string"
+        },
+        "os": {
+          "type": "string"
+        },
+        "ip": {
+          "type": "string"
+        },
+        "location": {
+          "type": "string"
+        },
+        "lastActive": {
+          "type": "string"
+        },
+        "isCurrent": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "UserStatusStory": {
+      "title": "UserStatusStory",
+      "description": "TalkBuzz high-contrast status stories.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "userId": {
+          "type": "string"
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "avatarUrl": {
+          "type": "string"
+        },
+        "mediaUrl": {
+          "type": "string"
+        },
+        "caption": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "userId"
+      ]
+    },
+    "AuditLogEntry": {
+      "title": "AuditLogEntry",
+      "description": "System access audit history.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "adminId": {
+          "type": "string"
+        },
+        "adminName": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        },
+        "targetType": {
+          "type": "string"
+        },
+        "targetId": {
+          "type": "string"
+        },
+        "details": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "AdminSettingsConfig": {
+      "title": "AdminSettingsConfig",
+      "description": "Global administration preferences.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "maintenanceMode": {
+          "type": "boolean"
+        },
+        "groupCreationEnabled": {
+          "type": "boolean"
+        },
+        "maxDownloadBytes": {
+          "type": "number"
+        },
+        "encryptionProtocol": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles database"
+    },
+    "/user_passwords/{email}": {
+      "schema": "UserPassword",
+      "description": "Secure user credentials lookup"
+    },
+    "/conversations/{convId}": {
+      "schema": "Conversation",
+      "description": "Conversations database"
+    },
+    "/messages/{msgId}": {
+      "schema": "Message",
+      "description": "Encrypted communication messages"
+    },
+    "/sessions/{sessId}": {
+      "schema": "UserSession",
+      "description": "Active session registers"
+    },
+    "/stories/{storyId}": {
+      "schema": "UserStatusStory",
+      "description": "High contrast ephemeral stories"
+    },
+    "/audit_logs/{logId}": {
+      "schema": "AuditLogEntry",
+      "description": "Administration logs database"
+    },
+    "/admin_config/{configId}": {
+      "schema": "AdminSettingsConfig",
+      "description": "Global configurations settings"
+    }
+  }
+}

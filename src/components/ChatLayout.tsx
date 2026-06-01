@@ -10,6 +10,7 @@ import {
   Pin,
   Archive,
   MoreVertical,
+  MoreHorizontal,
   Send,
   Video,
   Phone,
@@ -39,10 +40,13 @@ import {
 } from 'lucide-react';
 import { User, Conversation, Message, UserRole, UserStatusStory } from '../types';
 import { AdminSettingsConfig } from '../data';
+import { compressData, decompressData } from '../utils/compression';
+
 
 interface ChatLayoutProps {
   currentUser: User;
   users: User[];
+  onAddUser?: (user: User) => void;
   conversations: Conversation[];
   onAddConversation: (conv: Conversation) => void;
   onUpdateConversation: (convId: string, updates: Partial<Conversation>) => void;
@@ -50,6 +54,7 @@ interface ChatLayoutProps {
   onAddMessage: (msg: Message) => void;
   onUpdateMessage: (msgId: string, updates: Partial<Message>) => void;
   onDeleteMessage: (msgId: string) => void;
+  onDeleteConversation?: (convId: string) => void;
   adminConfig: AdminSettingsConfig;
   stories: UserStatusStory[];
   onOpenStories: (storyOwnerId: string) => void;
@@ -58,6 +63,7 @@ interface ChatLayoutProps {
 export default function ChatLayout({
   currentUser,
   users,
+  onAddUser,
   conversations,
   onAddConversation,
   onUpdateConversation,
@@ -65,6 +71,7 @@ export default function ChatLayout({
   onAddMessage,
   onUpdateMessage,
   onDeleteMessage,
+  onDeleteConversation,
   adminConfig,
   stories,
   onOpenStories
@@ -99,6 +106,7 @@ export default function ChatLayout({
 
   // Info details / Group Admin Info Sheet
   const [isDetailsOpen, setIsDetailsOpen] = useState<boolean>(false);
+  const [isHeaderMenuOpen, setIsHeaderMenuOpen] = useState<boolean>(false);
 
   // Media save file progress
   const [downloadingFileId, setDownloadingFileId] = useState<string | null>(null);
@@ -109,11 +117,211 @@ export default function ChatLayout({
   const [recordSeconds, setRecordSeconds] = useState<number>(0);
   const [recordIntervalId, setRecordIntervalId] = useState<any>(null);
 
+  // Compression & Decompression core cache engine
+  const [decompressedTexts, setDecompressedTexts] = useState<Record<string, string>>({});
+
+  // Real Audio Recording refs
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+
+  // Real file transmission refs
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [selectedFileType, setSelectedFileType] = useState<'image' | 'video' | 'document' | null>(null);
+
+  // Custom audio player engine
+  const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
+  const [audioDuration, setAudioDuration] = useState<number>(0);
+  const [audioCurrentTime, setAudioCurrentTime] = useState<number>(0);
+  const audioElRef = useRef<HTMLAudioElement | null>(null);
+  const playPromiseRef = useRef<Promise<void> | null>(null);
+
+  const handleTogglePlayAudio = (msgId: string, srcUrl: string) => {
+    if (playingAudioId === msgId) {
+      if (audioElRef.current) {
+        const currentAudio = audioElRef.current;
+        if (playPromiseRef.current) {
+          playPromiseRef.current.then(() => {
+            currentAudio.pause();
+          }).catch(() => {});
+        } else {
+          currentAudio.pause();
+        }
+      }
+      setPlayingAudioId(null);
+    } else {
+      if (audioElRef.current) {
+        const prevAudio = audioElRef.current;
+        if (playPromiseRef.current) {
+          playPromiseRef.current.then(() => {
+            prevAudio.pause();
+          }).catch(() => {});
+        } else {
+          prevAudio.pause();
+        }
+      }
+
+      const audio = new Audio(srcUrl);
+      audioElRef.current = audio;
+      setPlayingAudioId(msgId);
+      
+      audio.onloadedmetadata = () => {
+        setAudioDuration(audio.duration || 0);
+      };
+      audio.ontimeupdate = () => {
+        setAudioCurrentTime(audio.currentTime || 0);
+      };
+      audio.onended = () => {
+        setPlayingAudioId(null);
+        setAudioCurrentTime(0);
+      };
+
+      const playPromise = audio.play();
+      playPromiseRef.current = playPromise;
+
+      playPromise.catch(err => {
+        if (err.name === 'AbortError' || err.message?.includes('interrupted')) {
+          console.info("Audio playback cleanup or interrupt (benign).");
+        } else {
+          console.error("Audio playback error:", err);
+        }
+        setPlayingAudioId(current => current === msgId ? null : current);
+      });
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (audioElRef.current) {
+        const audio = audioElRef.current;
+        if (playPromiseRef.current) {
+          playPromiseRef.current.then(() => {
+            audio.pause();
+          }).catch(() => {});
+        } else {
+          audio.pause();
+        }
+      }
+    };
+  }, []);
+
   const feedEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     feedEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, selectedConvId]);
+
+  // Handle auto-selected item correction if deleted
+  useEffect(() => {
+    if (selectedConvId && !conversations.some(c => c.id === selectedConvId)) {
+      setSelectedConvId(conversations[0]?.id || null);
+    }
+  }, [conversations, selectedConvId]);
+
+  // Real-time active typing user ids from server
+  const [typingUserIds, setTypingUserIds] = useState<string[]>([]);
+
+  // Periodically pull typing users specifically for active conversation
+  useEffect(() => {
+    if (!selectedConvId) {
+      setTypingUserIds([]);
+      return;
+    }
+
+    const pollTyping = () => {
+      fetch(`/api/typing?conversationId=${encodeURIComponent(selectedConvId)}`)
+        .then(res => {
+          if (res.ok) return res.json();
+          throw new Error('typing pull error');
+        })
+        .then(data => {
+          if (data && Array.isArray(data.typers)) {
+            setTypingUserIds(data.typers);
+          }
+        })
+        .catch(err => console.debug('Polled typing failed:', err));
+    };
+
+    pollTyping();
+    const typingInterval = setInterval(pollTyping, 2000);
+    return () => clearInterval(typingInterval);
+  }, [selectedConvId]);
+
+  // Handle current user typing state sync to server with inactivity debounce
+  useEffect(() => {
+    if (!selectedConvId) return;
+
+    if (!inputText.trim()) {
+      if (isTyping) {
+        setIsTyping(false);
+        fetch('/api/typing', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversationId: selectedConvId, userId: currentUser.id, isTyping: false })
+        }).catch(err => console.debug('Failed to sync typing state:', err));
+      }
+      return;
+    }
+
+    if (!isTyping) {
+      setIsTyping(true);
+      fetch('/api/typing', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversationId: selectedConvId, userId: currentUser.id, isTyping: true })
+      }).catch(err => console.debug('Failed to sync typing state:', err));
+    }
+
+    const timer = setTimeout(() => {
+      setIsTyping(false);
+      fetch('/api/typing', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversationId: selectedConvId, userId: currentUser.id, isTyping: false })
+      }).catch(err => console.debug('Failed to sync typing state:', err));
+    }, 2800);
+
+    return () => clearTimeout(timer);
+  }, [inputText, selectedConvId]);
+
+  // Decompress all messages on receipt
+  useEffect(() => {
+    let active = true;
+    
+    const decompressAll = async () => {
+      const neededMsgs = messages.filter(m => {
+        const isCompressed = (m.ciphertext && m.ciphertext.startsWith("COMPRESSED_GZIP:")) || 
+                             (m.decryptedText && m.decryptedText.startsWith("COMPRESSED_GZIP:"));
+        return isCompressed;
+      });
+
+      if (neededMsgs.length === 0) return;
+
+      for (const msg of neededMsgs) {
+        if (decompressedTexts[msg.id]) continue;
+
+        const rawData = msg.ciphertext?.startsWith("COMPRESSED_GZIP:") ? msg.ciphertext : msg.decryptedText;
+        if (!rawData) continue;
+
+        try {
+          const decompressed = await decompressData(rawData);
+          if (active) {
+            setDecompressedTexts(prev => {
+              if (prev[msg.id] === decompressed) return prev;
+              return { ...prev, [msg.id]: decompressed };
+            });
+          }
+        } catch (e) {
+          console.error("Error decompressing message", msg.id, e);
+        }
+      }
+    };
+
+    decompressAll();
+
+    return () => {
+      active = false;
+    };
+  }, [messages, decompressedTexts]);
 
   // Handle auto-response simulations for life-like interaction
   const triggerAutoBotResponse = (convId: string, authorId: string) => {
@@ -152,7 +360,7 @@ export default function ChatLayout({
     }, 4000);
   };
 
-  const handleSendMessage = (e: React.FormEvent) => {
+  const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputText.trim() || !selectedConvId) return;
 
@@ -169,12 +377,17 @@ export default function ChatLayout({
     const quotedMsg = quotedMsgId ? messages.find(m => m.id === quotedMsgId) : null;
     setQuotedMsgId(null);
 
+    // Compress data
+    const compressedPayload = await compressData(textToSend);
+    const savings = Math.max(0, Math.round((1 - (compressedPayload.length / textToSend.length)) * 100));
+
     // Simulate tokenization steps for visual feedback (Phase 3 C tokenize.c logic)
     setIsTokenizing(true);
     const steps = [
       { id: '1', step: 'C Array Parse', payload: `tokenize.c input string parsed into master size count: ${textToSend.length} bytes.` },
       { id: '2', step: 'Split Blocks', payload: `Payload split into ${(Math.ceil(textToSend.length / 32))} discrete 32-byte transmission chunks.` },
-      { id: '3', step: 'Curve25519 Salt', payload: `NACL public key signature validated. Ciphertext payload generated.` }
+      { id: '3', step: 'Curve25519 Salt', payload: `NACL public key signature validated. Ciphertext payload generated.` },
+      { id: '4', step: 'Gzip Stream', payload: `Compressed payload on-the-fly to ${compressedPayload.length} bytes (saved ${savings}% transit budget).` }
     ];
 
     setTokenizerQueue(steps);
@@ -187,7 +400,7 @@ export default function ChatLayout({
         id: msgId,
         conversationId: selectedConvId,
         senderId: currentUser.id,
-        ciphertext: `EncryptedPayload_${Date.now().toString(16)}`,
+        ciphertext: compressedPayload,
         decryptedText: textToSend,
         messageType: 'text',
         replyToId: quotedMsg ? quotedMsg.id : undefined,
@@ -251,9 +464,26 @@ export default function ChatLayout({
     });
   };
 
-  // Simulate local device storage save progress bar (Phase 4)
+  // Download real file or simulate local device storage save progress bar (Phase 4)
   const handleDownloadFileSimulation = (msg: Message) => {
     if (!msg.mediaMetadata) return;
+
+    // Check if we have the decompressed base64 data available to download the actual file
+    const realDataUrl = decompressedTexts[msg.id];
+    if (realDataUrl && realDataUrl.startsWith("data:")) {
+      try {
+        const link = document.createElement("a");
+        link.href = realDataUrl;
+        link.download = msg.mediaMetadata.filename || "downloaded-file";
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        return;
+      } catch (e) {
+        console.error("Failed to download file directly:", e);
+      }
+    }
+
     setDownloadingFileId(msg.id);
     setDownloadProgress(0);
 
@@ -269,42 +499,137 @@ export default function ChatLayout({
     }, 150);
   };
 
-  // Simulate Voice records logic
+  // Real Voice and File records logic with compression
   const handleToggleVoiceRecord = () => {
     if (isRecording) {
       clearInterval(recordIntervalId);
       setIsRecording(false);
       setRecordSeconds(0);
-
-      // Save voice
-      const voiceMsg: Message = {
-        id: `msg_v_${Date.now()}`,
-        conversationId: selectedConvId || '',
-        senderId: currentUser.id,
-        ciphertext: `VoiceRecordBlob_${Date.now()}`,
-        decryptedText: 'Voice Message recording synced cleanly.',
-        messageType: 'audio',
-        mediaMetadata: {
-          filename: `voice_note_${Date.now().toString().slice(-4)}.ogg`,
-          size: 78000,
-          type: 'audio/ogg'
-        },
-        isDeleted: false,
-        createdAt: new Date().toISOString(),
-        reactions: {}
-      };
-      if (selectedConvId) {
-        onAddMessage(voiceMsg);
-        onUpdateConversation(selectedConvId, { lastMessageAt: new Date().toISOString() });
+      
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        try {
+          mediaRecorderRef.current.stop();
+          // Stop track buffers to close active mic usage flags in browser
+          mediaRecorderRef.current.stream.getTracks().forEach(track => {
+            try {
+              track.stop();
+            } catch (err) {
+              console.warn("Failed stopping audio track link:", err);
+            }
+          });
+        } catch (e) {
+          console.error("Failed terminating recording cleanly:", e);
+        }
       }
     } else {
-      setIsRecording(true);
-      setRecordSeconds(0);
-      const intv = setInterval(() => {
-        setRecordSeconds(prev => prev + 1);
-      }, 1000);
-      setRecordIntervalId(intv);
+      if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        alert("Browser does not support mediaDevices API needed for microphone storage capture.");
+        return;
+      }
+
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(stream => {
+          const mediaRecorder = new MediaRecorder(stream);
+          mediaRecorderRef.current = mediaRecorder;
+          audioChunksRef.current = [];
+
+          mediaRecorder.ondataavailable = (event) => {
+            if (event.data && event.data.size > 0) {
+              audioChunksRef.current.push(event.data);
+            }
+          };
+
+          mediaRecorder.onstop = async () => {
+            const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+            
+            // Read to base64
+            const reader = new FileReader();
+            reader.readAsDataURL(audioBlob);
+            reader.onloadend = async () => {
+              const base64Audio = reader.result as string;
+              
+              // Compress audio Base64 string before transmission
+              const compressedAudio = await compressData(base64Audio);
+              
+              const voiceMsg: Message = {
+                id: `msg_v_${Date.now()}`,
+                conversationId: selectedConvId || '',
+                senderId: currentUser.id,
+                ciphertext: compressedAudio,
+                decryptedText: `[Audio Payload] voice_note_${Date.now().toString().slice(-4)}.webm`,
+                messageType: 'audio',
+                mediaMetadata: {
+                  filename: `voice_note_${Date.now().toString().slice(-4)}.webm`,
+                  size: audioBlob.size,
+                  type: 'audio/webm'
+                },
+                isDeleted: false,
+                createdAt: new Date().toISOString(),
+                reactions: {}
+              };
+
+              if (selectedConvId) {
+                onAddMessage(voiceMsg);
+                onUpdateConversation(selectedConvId, { lastMessageAt: new Date().toISOString() });
+              }
+            };
+          };
+
+          mediaRecorder.start();
+          setIsRecording(true);
+          setRecordSeconds(0);
+          const intv = setInterval(() => {
+            setRecordSeconds(prev => prev + 1);
+          }, 1000);
+          setRecordIntervalId(intv);
+        })
+        .catch(err => {
+          console.error("Audio access rejected or error initialized:", err);
+          alert("Permission to access the microphone was denied or failed to initialize. Please check settings!");
+        });
     }
+  };
+
+  const handleRealFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !selectedConvId) return;
+
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onloadend = async () => {
+      const base64Data = reader.result as string;
+      const compressedData = await compressData(base64Data);
+      
+      const fileType = file.type.startsWith('image/')
+        ? 'image'
+        : file.type.startsWith('video/')
+          ? 'video'
+          : 'document';
+
+      const mediaMessage: Message = {
+        id: `msg_media_${Date.now()}`,
+        conversationId: selectedConvId,
+        senderId: currentUser.id,
+        ciphertext: compressedData,
+        decryptedText: `Shared media: ${file.name}`,
+        messageType: fileType,
+        mediaMetadata: {
+          filename: file.name,
+          size: file.size,
+          type: file.type,
+          localPath: file.name
+        },
+        isDeleted: false,
+        reactions: {},
+        createdAt: new Date().toISOString()
+      };
+
+      onAddMessage(mediaMessage);
+      onUpdateConversation(selectedConvId, {
+        lastMessageAt: new Date().toISOString()
+      });
+    };
+    e.target.value = '';
   };
 
   const handleReactionClick = (msgId: string, emoji: string) => {
@@ -329,8 +654,12 @@ export default function ChatLayout({
 
   const handleStartDirectChat = (recipient: User) => {
     setIsNewChatOpen(false);
-    // Determine if conversation already exists with recipient
-    const existing = conversations.find(c => !c.isGroup && c.participantId === recipient.id);
+    // Determine if conversation already exists with recipient (isolated per-user)
+    const existing = conversations.find(c => 
+      !c.isGroup && 
+      c.participantId === recipient.id && 
+      (!c.memberIds || c.memberIds.length === 0 || c.memberIds.includes(currentUser.id))
+    );
     if (existing) {
       setSelectedConvId(existing.id);
     } else {
@@ -339,6 +668,7 @@ export default function ChatLayout({
         id: newConvId,
         isGroup: false,
         participantId: recipient.id,
+        memberIds: [currentUser.id, recipient.id],
         lastMessageAt: new Date().toISOString(),
         pinned: false,
         archived: false,
@@ -348,6 +678,64 @@ export default function ChatLayout({
       onAddConversation(newConv);
       setSelectedConvId(newConvId);
     }
+  };
+
+  const handleCreateAndStartChat = (usernameTerm: string) => {
+    setIsNewChatOpen(false);
+    
+    // Clean up username
+    const cleanUsername = usernameTerm.replace(/[^a-zA-Z0-9_\-]/g, '').toLowerCase() || 'unknown';
+    const cleanDisplay = cleanUsername.charAt(0).toUpperCase() + cleanUsername.slice(1);
+    
+    // Check if user already exists
+    const existingUser = users.find(u => u.username.toLowerCase() === cleanUsername);
+    if (existingUser) {
+      handleStartDirectChat(existingUser);
+      return;
+    }
+    
+    const randomPresetImg = [
+      "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150",
+      "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150",
+      "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=150",
+      "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=150",
+      "https://images.unsplash.com/photo-1522075469751-3a6694fb2f61?auto=format&fit=crop&w=150"
+    ][Math.floor(Math.random() * 5)];
+
+    const newContact: User = {
+      id: `usr_${Date.now()}_${Math.floor(Math.random()*1000)}`,
+      username: cleanUsername,
+      displayName: cleanDisplay,
+      email: `${cleanUsername}@talkbuzz.internal`,
+      role: UserRole.USER,
+      isActive: true,
+      lastSeen: new Date().toISOString(),
+      publicKey: `MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQE_AutoGenerated_${Date.now().toString(16)}`,
+      avatarUrl: randomPresetImg,
+      bio: `TalkBuzz peer connected via secure communication discovery.`,
+      phone: '',
+      isTwoFactorEnabled: false,
+      twoFactorSecret: ''
+    };
+
+    if (onAddUser) {
+      onAddUser(newContact);
+    }
+    
+    // Add conversation
+    const newConvId = `conv_new_${Date.now()}`;
+    const newConv: Conversation = {
+      id: newConvId,
+      isGroup: false,
+      participantId: newContact.id,
+      lastMessageAt: new Date().toISOString(),
+      pinned: false,
+      archived: false,
+      muted: false,
+      unreadCount: 0
+    };
+    onAddConversation(newConv);
+    setSelectedConvId(newConvId);
   };
 
   const handleCreateGroupSubmit = () => {
@@ -425,9 +813,9 @@ export default function ChatLayout({
   });
 
   return (
-    <div id="talkbuzz-applet-messenger" className="flex h-[85vh] bg-[#0A0C10] border border-slate-800 rounded-2xl overflow-hidden shadow-[0_0_50px_rgba(0,0,0,0.6)] text-slate-300">
+    <div id="talkbuzz-applet-messenger" className="flex flex-1 h-full w-full bg-[#0A0C10] text-[#CBD5E1] overflow-hidden">
       {/* LEFT COLUMN: Chat Selection list list */}
-      <div className={`w-full md:w-80 border-r border-[#1e293b] flex flex-col bg-[#0D1117] ${selectedConvId ? 'hidden md:flex' : 'flex'}`}>
+      <div className={`w-full md:w-80 border-r border-[#1e293b] flex flex-col bg-[#0D1117] h-full shrink-0 ${selectedConvId ? 'hidden md:flex' : 'flex'}`}>
         
         {/* Navigation tabs */}
         <div className="flex bg-[#0D1117] border-b border-slate-800 text-xs font-mono">
@@ -510,7 +898,7 @@ export default function ChatLayout({
                   >
                     <div className="relative flex-shrink-0">
                       <img
-                        src={recDetails.avatarUrl}
+                        src={recDetails.avatarUrl || undefined}
                         alt=""
                         className="w-10 h-10 rounded-full object-cover border border-slate-800/60"
                       />
@@ -580,7 +968,7 @@ export default function ChatLayout({
                 >
                   <div className="p-[2px] rounded-full border-2 border-[#E5E7EB] flex-shrink-0">
                     <img
-                      src={story.avatarUrl}
+                      src={story.avatarUrl || undefined}
                       alt=""
                       className="w-9 h-9 rounded-full object-cover"
                     />
@@ -601,11 +989,11 @@ export default function ChatLayout({
 
       {/* RIGHT COLUMN: Active conversation Feed dashboard */}
       {currentConversation ? (
-        <div className={`flex-1 flex flex-col bg-[#0A0C10] relative ${selectedConvId ? 'flex' : 'hidden md:flex'}`}>
+        <div className={`flex-1 flex flex-col bg-[#0A0C10] h-full relative ${selectedConvId ? 'flex' : 'hidden md:flex'}`}>
           
           {/* Active Chat Header */}
-          <div className="px-4 md:px-6 py-3.5 border-b border-slate-800 bg-[#0D1117] flex items-center justify-between">
-            <div className="flex items-center gap-2 md:gap-3 cursor-pointer">
+          <div className="px-4 py-3 border-b border-slate-800 bg-[#0D1117] flex items-center justify-between">
+            <div className="flex items-center gap-2 cursor-pointer">
               {/* Mobile Back Button */}
               <button
                 type="button"
@@ -618,7 +1006,7 @@ export default function ChatLayout({
 
               <div className="flex items-center gap-2.5 md:gap-3" onClick={() => setIsDetailsOpen(true)}>
                 <img
-                  src={companionUser ? companionUser.avatarUrl : currentConversation.iconUrl}
+                  src={(companionUser ? companionUser.avatarUrl : currentConversation.iconUrl) || undefined}
                   alt=""
                   className="w-9 h-9 md:w-10 md:h-10 rounded-full object-cover border border-slate-800"
                 />
@@ -627,10 +1015,37 @@ export default function ChatLayout({
                     {companionUser ? companionUser.displayName : currentConversation.name}
                     {!companionUser && <Users className="w-3.5 h-3.5 text-slate-400" />}
                   </h3>
-                  <span className="text-[10px] font-mono text-emerald-400 flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block shadow-[0_0_6px_#10b981]"></span>
-                    {companionUser ? (companionUser.isActive ? 'ONLINE' : 'SECURED OFFLINE') : `${currentConversation.memberIds?.length || 0} peers`}
-                  </span>
+                  {(() => {
+                    const activeTypers = typingUserIds.filter(id => id !== currentUser.id);
+                    if (activeTypers.length > 0) {
+                      const typingText = activeTypers.map(id => {
+                        if (id === 'user_bot_buzz') return 'Buzz AI Assistant';
+                        const u = users.find(user => user.id === id);
+                        return u ? u.displayName : 'Someone';
+                      }).join(', ') + ' typing...';
+                      return (
+                        <motion.span
+                          key="typing-indicator"
+                          initial={{ opacity: 0, y: -2 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="text-[10px] font-mono text-emerald-400 flex items-center gap-1.5 font-bold tracking-tight"
+                        >
+                          <span className="flex gap-0.5 items-center mr-0.5">
+                            <span className="w-1 h-1 bg-emerald-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                            <span className="w-1 h-1 bg-emerald-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                            <span className="w-1 h-1 bg-emerald-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                          </span>
+                          {typingText}
+                        </motion.span>
+                      );
+                    }
+                    return (
+                      <span className="text-[10px] font-mono text-emerald-450 uppercase flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block shadow-[0_0_6px_#10b981]"></span>
+                        {companionUser ? (companionUser.isActive ? 'ONLINE' : 'SECURED OFFLINE') : `${currentConversation.memberIds?.length || 0} peers`}
+                      </span>
+                    );
+                  })()}
                 </div>
               </div>
             </div>
@@ -643,13 +1058,73 @@ export default function ChatLayout({
               >
                 <Search className="w-4 h-4" />
               </button>
-              <button
-                onClick={() => setIsDetailsOpen(!isDetailsOpen)}
-                className="w-11 h-11 flex items-center justify-center rounded-xl hover:bg-slate-800 cursor-pointer focus:outline-none flex-shrink-0"
-                title="Details & Settings"
-              >
-                <MoreVertical className="w-4 h-4" />
-              </button>
+              <div className="relative">
+                <button
+                  onClick={() => setIsHeaderMenuOpen(!isHeaderMenuOpen)}
+                  className={`w-11 h-11 flex items-center justify-center rounded-xl hover:bg-slate-800 cursor-pointer focus:outline-none flex-shrink-0 ${isHeaderMenuOpen ? 'bg-slate-800 text-slate-100' : ''}`}
+                  title="Chat Options & Management"
+                >
+                  <MoreVertical className="w-4 h-4" />
+                </button>
+                
+                {isHeaderMenuOpen && (
+                  <div className="absolute right-0 mt-2 w-48 bg-[#0D1117] border border-slate-800 rounded-xl shadow-2xl z-50 p-1.5 flex flex-col gap-1 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsDetailsOpen(true);
+                        setIsHeaderMenuOpen(false);
+                      }}
+                      className="w-full text-left px-3 py-2 hover:bg-slate-800 text-slate-300 rounded-lg flex items-center gap-2 cursor-pointer transition-colors"
+                    >
+                      <HelpCircle className="w-3.5 h-3.5 text-emerald-400" />
+                      Show Chat Details
+                    </button>
+                    
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onUpdateConversation(currentConversation.id, { pinned: !currentConversation.pinned });
+                        setIsHeaderMenuOpen(false);
+                      }}
+                      className="w-full text-left px-3 py-2 hover:bg-slate-800 text-slate-300 rounded-lg flex items-center gap-2 cursor-pointer transition-colors"
+                    >
+                      <Pin className="w-3.5 h-3.5 text-blue-400" />
+                      {currentConversation.pinned ? 'Unpin Chat' : 'Pin Chat Room'}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onUpdateConversation(currentConversation.id, { muted: !currentConversation.muted });
+                        setIsHeaderMenuOpen(false);
+                      }}
+                      className="w-full text-left px-3 py-2 hover:bg-slate-800 text-slate-300 rounded-lg flex items-center gap-2 cursor-pointer transition-colors"
+                    >
+                      <Volume2 className="w-3.5 h-3.5 text-amber-400" />
+                      {currentConversation.muted ? 'Unmute Alerts' : 'Mute Alerts'}
+                    </button>
+
+                    <div className="border-t border-slate-800/85 my-1" />
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsHeaderMenuOpen(false);
+                        if (window.confirm("Are you sure you want to delete this chat? This will remove all message ciphertext records permanently for everyone.")) {
+                          if (onDeleteConversation) {
+                            onDeleteConversation(currentConversation.id);
+                          }
+                        }
+                      }}
+                      className="w-full text-left px-3 py-2 hover:bg-red-500/10 text-red-400 hover:text-red-300 rounded-lg flex items-center gap-2 cursor-pointer transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 text-red-500" />
+                      Delete Chat Room
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
@@ -686,8 +1161,11 @@ export default function ChatLayout({
               const sender = users.find(u => u.id === msg.senderId);
 
               return (
-                <div
+                <motion.div
                   key={msg.id}
+                  initial={{ opacity: 0, scale: 0.96, y: 8 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  transition={{ duration: 0.18, ease: "easeOut" }}
                   onMouseEnter={() => setHoveredMsgId(msg.id)}
                   onMouseLeave={() => { setHoveredMsgId(null); setMsgMenuOpenId(null); }}
                   onClick={() => setHoveredMsgId(hoveredMsgId === msg.id ? null : msg.id)}
@@ -712,41 +1190,182 @@ export default function ChatLayout({
                   }`}>
                     {/* Message payloads formats */}
                     {msg.messageType === 'text' && (
-                      <p className="text-xs font-sans whitespace-pre-wrap leading-relaxed select-text">{msg.decryptedText}</p>
+                      <p className="text-xs font-sans whitespace-pre-wrap leading-relaxed select-text">
+                        {decompressedTexts[msg.id] || msg.decryptedText}
+                      </p>
                     )}
 
                     {msg.messageType === 'audio' && (
-                      <div className="flex items-center gap-3">
-                        <Mic className="w-5 h-5 text-slate-450" />
-                        <div>
-                          <div className="text-[11px] font-bold">Voice Message Payload</div>
-                          <div className="text-[10px] text-slate-450 font-mono">0:12 • Sync completed</div>
+                      <div className="flex flex-col gap-2 min-w-[260px] md:min-w-[290px] p-1 bg-[#0A0C10]/90 backdrop-blur border border-slate-800/80 rounded-xl">
+                        <div className="flex items-center gap-3 p-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const audioUrl = decompressedTexts[msg.id];
+                              if (audioUrl) {
+                                handleTogglePlayAudio(msg.id, audioUrl);
+                              }
+                            }}
+                            disabled={!decompressedTexts[msg.id]}
+                            className={`w-9 h-9 rounded-full flex items-center justify-center transition-all cursor-pointer ${
+                              playingAudioId === msg.id 
+                                ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 scale-105' 
+                                : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 hover:scale-105'
+                            } disabled:opacity-40 disabled:cursor-not-allowed`}
+                            title={decompressedTexts[msg.id] ? "Play Voice Note" : "Streaming..."}
+                          >
+                            {playingAudioId === msg.id ? (
+                              <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                                <rect x="5" y="4" width="4" height="16" rx="1" />
+                                <rect x="15" y="4" width="4" height="16" rx="1" />
+                              </svg>
+                            ) : (
+                              <svg className="w-4 h-4 fill-current ml-0.5" viewBox="0 0 24 24">
+                                <path d="M8 5v14l11-7z" />
+                              </svg>
+                            )}
+                          </button>
+                          
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[11px] font-bold text-slate-200">Vocoder Auditory Wave</span>
+                              <span className="text-[8px] font-mono font-bold tracking-widest text-emerald-400 uppercase">
+                                {decompressedTexts[msg.id] ? "SECURED INFLATED" : "DECRYPTION ACTIVE"}
+                              </span>
+                            </div>
+
+                            {/* Simulated custom sound waveform seek progress bar */}
+                            <div 
+                              className="w-full bg-slate-800/60 h-1.5 rounded-full mt-2 overflow-hidden relative cursor-pointer group"
+                              onClick={(e) => {
+                                if (playingAudioId === msg.id && audioElRef.current && audioDuration > 0) {
+                                  const rect = e.currentTarget.getBoundingClientRect();
+                                  const clickX = e.clientX - rect.left;
+                                  const percentage = clickX / rect.width;
+                                  audioElRef.current.currentTime = percentage * audioDuration;
+                                }
+                              }}
+                            >
+                              <div 
+                                className="bg-emerald-500 h-full transition-all duration-100" 
+                                style={{ 
+                                  width: `${playingAudioId === msg.id && audioDuration > 0 ? (audioCurrentTime / audioDuration) * 100 : 0}%` 
+                                }} 
+                              />
+                            </div>
+
+                            <div className="flex justify-between items-center text-[8px] font-mono text-slate-400 mt-1">
+                              <span>
+                                {playingAudioId === msg.id 
+                                  ? `${Math.floor(audioCurrentTime / 60)}:${String(Math.floor(audioCurrentTime % 60)).padStart(2, '0')}` 
+                                  : '0:00'
+                                }
+                              </span>
+                              <span>
+                                {playingAudioId === msg.id && audioDuration > 0
+                                  ? `${Math.floor(audioDuration / 60)}:${String(Math.floor(audioDuration % 60)).padStart(2, '0')}`
+                                  : '0:12 • SyncCompleted'
+                                }
+                              </span>
+                            </div>
+                          </div>
                         </div>
-                        <Volume2 className="w-4 h-4 text-slate-650" />
+                      </div>
+                    )}
+
+                    {msg.messageType === 'image' && (
+                      <div className="flex flex-col gap-2 min-w-[210px] bg-[#0A0C10]/95 p-1.5 rounded-xl border border-slate-800/80 relative group/img shadow-xl">
+                        {decompressedTexts[msg.id] ? (
+                          <div className="relative overflow-hidden rounded-lg">
+                            <img
+                              src={decompressedTexts[msg.id]}
+                              alt={msg.mediaMetadata?.filename || "Compressed Image"}
+                              className="max-w-full rounded-lg max-h-64 object-contain mx-auto border border-slate-900 transition-transform duration-300 group-hover/img:scale-[1.02]"
+                              referrerPolicy="no-referrer"
+                            />
+                            {/* Hover overlay download button */}
+                            <div className="absolute inset-0 bg-black/60 opacity-0 group-hover/img:opacity-100 transition-opacity duration-200 flex items-center justify-center">
+                              <button
+                                type="button"
+                                onClick={() => handleDownloadFileSimulation(msg)}
+                                className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-[10px] rounded-lg cursor-pointer flex items-center gap-1.5 font-sans transition-all transform scale-95 group-hover/img:scale-100 duration-200 active:scale-95 shadow-md"
+                              >
+                                <Download className="w-3.5 h-3.5" /> Direct Save
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-center gap-2 p-5 bg-[#0D1117] rounded-lg border border-slate-800">
+                            <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
+                            <span className="text-[10px] font-mono text-slate-400">Loading secure photo raw payload...</span>
+                          </div>
+                        )}
+                        <div className="flex items-center justify-between mt-1 px-1 text-[9px] font-mono">
+                          <span className="text-slate-400 truncate max-w-[140px]" title={msg.mediaMetadata?.filename}>
+                            {msg.mediaMetadata?.filename || "secret_handshake.png"}
+                          </span>
+                          <span className="text-emerald-400 font-bold bg-emerald-500/10 px-1.5 py-0.2 rounded border border-emerald-500/20">GZIP KEYED</span>
+                        </div>
+                      </div>
+                    )}
+
+                    {msg.messageType === 'video' && (
+                      <div className="flex flex-col gap-2 min-w-[210px] bg-[#0A0C10]/95 p-1.5 rounded-xl border border-slate-800/80 relative shadow-xl">
+                        {decompressedTexts[msg.id] ? (
+                          <div className="rounded-lg overflow-hidden bg-[#0D1117] border border-slate-900">
+                            <video
+                              src={decompressedTexts[msg.id]}
+                              controls
+                              className="max-w-full rounded-lg max-h-64 object-contain mx-auto"
+                            />
+                          </div>
+                        ) : (
+                          <div className="flex flex-col items-center justify-center gap-2 p-6 bg-[#0D1117] rounded-lg border border-slate-800 animate-pulse">
+                            <Video className="w-5 h-5 text-emerald-400 animate-spin" />
+                            <span className="text-[10px] font-mono text-slate-400">Buffer gzip stream...</span>
+                          </div>
+                        )}
+                        <div className="flex items-center justify-between mt-1 px-1 text-[9px] font-mono">
+                          <span className="text-slate-400 truncate max-w-[140px]" title={msg.mediaMetadata?.filename}>
+                            {msg.mediaMetadata?.filename || "secret_footage.mp4"}
+                          </span>
+                          <span className="text-amber-400 font-bold bg-amber-500/10 px-1.5 py-0.2 rounded border border-amber-500/20">DECRYPTING</span>
+                        </div>
                       </div>
                     )}
 
                     {msg.messageType === 'document' && msg.mediaMetadata && (
-                      <div className="flex items-center gap-4 bg-[#0A0C10] p-2.5 rounded-xl border border-slate-800">
-                        <Paperclip className="w-5 h-5 text-slate-400" />
-                        <div className="min-w-0">
-                          <h5 className="text-[11px] font-bold text-slate-200 truncate max-w-[120px]">{msg.mediaMetadata.filename}</h5>
-                          <span className="text-[9px] font-mono text-slate-500">{(msg.mediaMetadata.size/1024).toFixed(1)} KB • Split Binary</span>
+                      <div className="flex items-center gap-4 bg-[#0A0C10] p-3 rounded-xl border border-slate-800 min-w-[240px] md:min-w-[270px]">
+                        <div className="w-10 h-10 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center shrink-0">
+                          <Paperclip className="w-5 h-5 text-emerald-400" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <h5 className="text-[11px] font-bold text-slate-200 truncate max-w-[120px]" title={msg.mediaMetadata.filename}>
+                            {msg.mediaMetadata.filename}
+                          </h5>
+                          <span className="text-[9px] font-mono text-slate-400 flex items-center gap-1 mt-0.5">
+                            <span className="inline-block px-1 py-0.2 bg-emerald-500/10 text-emerald-400 text-[8px] font-bold rounded border border-emerald-500/20">
+                              {(msg.mediaMetadata.size/1024).toFixed(1)} KB
+                            </span>
+                            • {decompressedTexts[msg.id] ? "GZIPPED" : "READ_STREAM"}
+                          </span>
                         </div>
 
                         {downloadingFileId === msg.id ? (
-                          <div className="w-8 flex flex-col items-center">
-                            <span className="text-[8px] font-mono">{downloadProgress}%</span>
-                            <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden mt-1">
+                          <div className="w-10 flex flex-col items-center shrink-0">
+                            <span className="text-[8px] font-mono text-emerald-400 font-bold">{downloadProgress}%</span>
+                            <div className="w-full bg-slate-800 h-1 rounded-full overflow-hidden mt-1">
                               <div className="bg-emerald-500 h-full" style={{ width: `${downloadProgress}%` }} />
                             </div>
                           </div>
                         ) : (
                           <button
+                            type="button"
                             onClick={() => handleDownloadFileSimulation(msg)}
-                            className="px-4 py-2.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-[10px] font-bold rounded-lg flex items-center gap-1.5 cursor-pointer transition-colors border border-emerald-500/20 min-h-[44px]"
+                            className="p-2 bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-slate-950 text-[10px] font-bold rounded-lg flex items-center justify-center cursor-pointer transition-all border border-emerald-500/25 shadow-md active:scale-95 shrink-0"
+                            title="Download to File Storage"
                           >
-                            <Download className="w-4 h-4" /> Save Device
+                            <Download className="w-3.5 h-3.5" />
                           </button>
                         )}
                       </div>
@@ -775,37 +1394,76 @@ export default function ChatLayout({
                   </div>
 
                   {/* Actions Popup triggering hover menus */}
-                  {hoveredMsgId === msg.id && (
-                    <div className={`absolute top-1/2 -translate-y-1/2 flex items-center gap-1 bg-[#0D1117] p-1 border border-slate-800 rounded-lg shadow-xl z-20 ${isMine ? '-left-28' : '-right-28'}`}>
+                  {(hoveredMsgId === msg.id || msgMenuOpenId === msg.id) && (
+                    <div className={`absolute top-1/2 -translate-y-1/2 flex items-center gap-1 bg-[#0D1117] p-1 border border-slate-800 rounded-lg shadow-xl z-20 ${isMine ? '-left-36' : '-right-36'}`}>
                       {/* Standard Reactions quick selector keys */}
                       {['👍', '❤️', '😂', '⚡'].map((emoji) => (
                         <button
                           key={emoji}
                           onClick={() => handleReactionClick(msg.id, emoji)}
-                          className="hover:scale-125 px-1 py-0.5 cursor-pointer text-xs"
+                          className="hover:scale-125 px-1 py-0.5 cursor-pointer text-[11px]"
                         >
                           {emoji}
                         </button>
                       ))}
                       <div className="border-l border-slate-800 h-4 mx-0.5" />
+                      
                       <button
                         onClick={() => setQuotedMsgId(msg.id)}
                         className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-slate-200 cursor-pointer"
+                        title="Quote message"
                       >
                         <CornerUpLeft className="w-3 h-3" />
                       </button>
-                      <button
-                        onClick={() => {
-                          if (window.confirm('E2E shred message payload for everyone?')) onDeleteMessage(msg.id);
-                        }}
-                        className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-red-400 cursor-pointer"
-                        title="Shred Payload"
-                      >
-                        <Trash2 className="w-3 h-3" />
-                      </button>
+
+                      <div className="relative">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setMsgMenuOpenId(msgMenuOpenId === msg.id ? null : msg.id);
+                          }}
+                          className={`p-1 rounded cursor-pointer ${msgMenuOpenId === msg.id ? 'bg-slate-800 text-slate-100' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'}`}
+                          title="Message Options"
+                        >
+                          <MoreHorizontal className="w-3 h-3" />
+                        </button>
+
+                        {/* Dropdown context list of option items */}
+                        {msgMenuOpenId === msg.id && (
+                          <div className={`absolute bottom-6 ${isMine ? 'right-0' : 'left-0'} w-40 bg-[#0D1117] border border-slate-800 rounded-lg shadow-2xl z-30 p-1 flex flex-col gap-0.5 text-[11px]`}>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setQuotedMsgId(msg.id);
+                                setMsgMenuOpenId(null);
+                              }}
+                              className="text-left w-full px-2 py-1.5 hover:bg-slate-800 text-slate-305 rounded flex items-center gap-1.5 cursor-pointer"
+                            >
+                              <CornerUpLeft className="w-3 h-3 text-emerald-400" />
+                              Reply / Quote
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setMsgMenuOpenId(null);
+                                if (window.confirm('E2E shred message payload for everyone?')) {
+                                  onDeleteMessage(msg.id);
+                                }
+                              }}
+                              className="text-left w-full px-2 py-1.5 hover:bg-red-500/10 text-red-450 hover:text-red-400 rounded flex items-center gap-1.5 cursor-pointer font-semibold"
+                            >
+                              <Trash2 className="w-3 h-3 text-red-500" />
+                              Delete Message
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   )}
-                </div>
+                </motion.div>
               );
             })}
 
@@ -860,6 +1518,15 @@ export default function ChatLayout({
           {/* Interactive footer keyboard entry field */}
           <div className="px-6 py-4 bg-[#0D1117] border-t border-slate-800">
             <form onSubmit={handleSendMessage} className="flex items-center gap-3">
+              {/* Hidden File Input for Compressed Uploads */}
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleRealFileChange}
+                accept={selectedFileType === 'image' ? 'image/*' : selectedFileType === 'video' ? 'video/*' : '*'}
+                className="hidden"
+              />
+
               {/* Media selection attachments menu keys */}
               <div className="relative group">
                 <button
@@ -870,13 +1537,13 @@ export default function ChatLayout({
                   <Paperclip className="w-4 h-4" />
                 </button>
                 <div className="hidden group-hover:flex flex-col gap-1.5 absolute bottom-12 left-0 bg-[#0D1117] border border-slate-800 p-2 rounded-xl shadow-2xl z-40 w-52 font-sans text-xs">
-                  <button type="button" onClick={() => handleUploadFileSimulation('image')} className="text-left px-3 py-2.5 min-h-[44px] hover:bg-slate-800 rounded text-slate-300 cursor-pointer">
+                  <button type="button" onClick={() => { setSelectedFileType('image'); setTimeout(() => fileInputRef.current?.click(), 50); }} className="text-left px-3 py-2.5 min-h-[44px] hover:bg-slate-800 rounded text-slate-300 cursor-pointer">
                     📸 Share Image Payload
                   </button>
-                  <button type="button" onClick={() => handleUploadFileSimulation('video')} className="text-left px-3 py-2.5 min-h-[44px] hover:bg-slate-800 rounded text-slate-300 cursor-pointer">
+                  <button type="button" onClick={() => { setSelectedFileType('video'); setTimeout(() => fileInputRef.current?.click(), 50); }} className="text-left px-3 py-2.5 min-h-[44px] hover:bg-slate-800 rounded text-slate-300 cursor-pointer">
                     🎥 Share Video Stream
                   </button>
-                  <button type="button" onClick={() => handleUploadFileSimulation('document')} className="text-left px-3 py-2.5 min-h-[44px] hover:bg-slate-800 rounded text-slate-300 cursor-pointer">
+                  <button type="button" onClick={() => { setSelectedFileType('document'); setTimeout(() => fileInputRef.current?.click(), 50); }} className="text-left px-3 py-2.5 min-h-[44px] hover:bg-slate-800 rounded text-slate-300 cursor-pointer">
                     📁 Share libsodium Shared Object
                   </button>
                 </div>
@@ -952,7 +1619,7 @@ export default function ChatLayout({
 
             <div className="p-6 flex flex-col items-center text-center space-y-4">
               <img
-                src={companionUser ? companionUser.avatarUrl : currentConversation.iconUrl}
+                src={(companionUser ? companionUser.avatarUrl : currentConversation.iconUrl) || undefined}
                 alt=""
                 className="w-24 h-24 rounded-full object-cover border-4 border-slate-800"
               />
@@ -1083,24 +1750,59 @@ export default function ChatLayout({
                     className="w-full bg-[#0A0C10] border border-slate-800 focus:border-emerald-500/40 rounded-xl text-xs px-3.5 py-2.5 text-slate-200 focus:outline-none placeholder-slate-600 transition-colors h-11"
                   />
 
-                  <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
-                    {users.filter(u => u.id !== currentUser.id && u.displayName.toLowerCase().includes(newChatSearch.toLowerCase())).map((u) => (
-                      <div
-                        key={u.id}
-                        onClick={() => handleStartDirectChat(u)}
-                        className="p-3.5 bg-[#0A0C10] border border-slate-800 hover:bg-slate-800/40 rounded-xl flex items-center justify-between cursor-pointer transition-all hover:border-slate-700 min-h-[48px]"
-                      >
-                        <div className="flex items-center gap-3">
-                          <img src={u.avatarUrl} alt="" className="w-8.5 h-8.5 rounded-full object-cover border border-slate-800" />
-                          <div>
-                            <div className="text-xs font-bold text-slate-200">{u.displayName}</div>
-                            <div className="text-[10px] text-slate-500 font-mono">@{u.username}</div>
-                          </div>
+                  {(() => {
+                    const cleanSearch = newChatSearch.trim().toLowerCase();
+                    const searchTermWithoutAt = cleanSearch.startsWith('@') ? cleanSearch.slice(1) : cleanSearch;
+                    const matchedUsers = users.filter(u => {
+                      if (u.id === currentUser.id) return false;
+                      if (!searchTermWithoutAt) return true;
+                      return (
+                        u.displayName.toLowerCase().includes(searchTermWithoutAt) ||
+                        u.username.toLowerCase().includes(searchTermWithoutAt)
+                      );
+                    });
+
+                    return (
+                      <div className="space-y-3">
+                        <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+                          {matchedUsers.map((u) => (
+                            <div
+                              key={u.id}
+                              onClick={() => handleStartDirectChat(u)}
+                              className="p-3.5 bg-[#0A0C10] border border-slate-800 hover:bg-slate-800/40 rounded-xl flex items-center justify-between cursor-pointer transition-all hover:border-slate-700 min-h-[48px]"
+                            >
+                              <div className="flex items-center gap-3">
+                                <img src={u.avatarUrl || undefined} alt="" className="w-8.5 h-8.5 rounded-full object-cover border border-slate-800" />
+                                <div>
+                                  <div className="text-xs font-bold text-slate-200">{u.displayName}</div>
+                                  <div className="text-[10px] text-slate-500 font-mono">@{u.username}</div>
+                                </div>
+                              </div>
+                              <Check className="w-4 h-4 text-emerald-400" />
+                            </div>
+                          ))}
+                          {matchedUsers.length === 0 && (
+                            <div className="p-4 text-center text-slate-500 text-xs">
+                              No contacts match "{newChatSearch}"
+                            </div>
+                          )}
                         </div>
-                        <Check className="w-4 h-4 text-emerald-400" />
+
+                        {searchTermWithoutAt.length > 0 && (
+                          <div className="pt-2 border-t border-slate-850">
+                            <button
+                              type="button"
+                              onClick={() => handleCreateAndStartChat(searchTermWithoutAt)}
+                              className="w-full p-3 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 hover:border-emerald-500/40 text-xs font-bold rounded-xl cursor-pointer transition-all flex items-center justify-center gap-2"
+                            >
+                              <Plus className="w-4 h-4" />
+                              Start Chat with unknown user: "@{searchTermWithoutAt}"
+                            </button>
+                          </div>
+                        )}
                       </div>
-                    ))}
-                  </div>
+                    );
+                  })()}
                 </div>
               ) : (
                 /* Group setup network */

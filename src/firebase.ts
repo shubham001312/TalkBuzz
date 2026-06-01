@@ -16,7 +16,22 @@ export async function signInWithGoogle() {
     const result = await signInWithPopup(auth, googleProvider);
     return result.user;
   } catch (err: any) {
-    console.error("Firebase Signin Error: ", err);
+    const isExpectedPopupError = 
+      err.code === 'auth/cancelled-popup-request' ||
+      err.code === 'auth/popup-blocked' ||
+      err.code === 'auth/popup-closed-by-user' ||
+      (err.message && (
+        err.message.includes('popup-blocked') ||
+        err.message.includes('cancelled-popup-request') ||
+        err.message.includes('popup-closed-by-user') ||
+        err.message.includes('popup closed by user')
+      ));
+
+    if (isExpectedPopupError) {
+      console.warn("Firebase Signin (Iframe/User Cancelled Safe Fallback): ", err.message || err);
+    } else {
+      console.error("Firebase Signin Error: ", err);
+    }
     throw err;
   }
 }

@@ -78,7 +78,7 @@ export default function StoriesModal({ stories, initialUserId, onClose }: Storie
         <div className="absolute top-6 left-4 right-4 flex items-center justify-between z-30 select-none">
           <div className="flex items-center gap-2.5">
             <img
-              src={currentStory.avatarUrl}
+              src={currentStory.avatarUrl || undefined}
               alt=""
               className="w-8 h-8 rounded-full border border-slate-800 object-cover"
             />
@@ -119,7 +119,7 @@ export default function StoriesModal({ stories, initialUserId, onClose }: Storie
           className="flex-1 overflow-hidden relative flex items-center justify-center bg-[#07080B] cursor-pointer"
         >
           <img
-            src={currentStory.mediaUrl}
+            src={currentStory.mediaUrl || undefined}
             alt=""
             className="w-full h-full object-cover select-none pointer-events-none"
             referrerPolicy="no-referrer"

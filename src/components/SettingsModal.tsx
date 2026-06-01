@@ -19,7 +19,9 @@ import {
   CheckCircle,
   AlertTriangle,
   Github,
-  ChevronDown
+  ChevronDown,
+  Loader2,
+  Check
 } from 'lucide-react';
 import { User, UserSession } from '../types';
 import { PRESET_AVATARS } from './SignupLogin';
@@ -48,6 +50,7 @@ export default function SettingsModal({
   const [avatarUrl, setAvatarUrl] = useState<string>(currentUser.avatarUrl);
 
   const [saving, setSaving] = useState<boolean>(false);
+  const [successSaved, setSuccessSaved] = useState<boolean>(false);
 
   // Password changing states
   const [currentPassword, setCurrentPassword] = useState<string>('');
@@ -93,7 +96,7 @@ export default function SettingsModal({
 
   // Privacy states
   const [lastSeenFilter, setLastSeenFilter] = useState<'Everyone' | 'Contacts' | 'Nobody'>('Everyone');
-  const [readReceipts, setReadReceipts] = useState<boolean>(true);
+  const [readReceipts, setReadReceipts] = useState<boolean>(currentUser.readReceipts !== false);
   const [onlineFilter, setOnlineFilter] = useState<boolean>(true);
 
   // 2FA TOTP state (Phase 12.13)
@@ -106,6 +109,7 @@ export default function SettingsModal({
   const handleProfileSave = (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
+    setSuccessSaved(false);
     setTimeout(() => {
       onUpdateUser(currentUser.id, {
         displayName,
@@ -114,8 +118,11 @@ export default function SettingsModal({
         avatarUrl
       });
       setSaving(false);
-      alert('Secure Profile details synced and updated cleanly!');
-    }, 1000);
+      setSuccessSaved(true);
+      setTimeout(() => {
+        setSuccessSaved(false);
+      }, 2500);
+    }, 1200);
   };
 
   const handleGenerateTOTP = () => {
@@ -210,7 +217,7 @@ export default function SettingsModal({
                   
                   <div className="flex items-center gap-4">
                     <img
-                      src={avatarUrl}
+                      src={avatarUrl || undefined}
                       alt="Avatar Preview"
                       className="w-14 h-14 rounded-full border border-slate-700 object-cover"
                     />
@@ -256,7 +263,7 @@ export default function SettingsModal({
                             avatarUrl === p ? 'border-emerald-450 scale-110 shadow-[0_0_8px_rgba(52,211,153,0.3)]' : 'border-slate-850 hover:border-slate-700'
                           }`}
                         >
-                          <img src={p} className="w-full h-full object-cover" alt="" />
+                          <img src={p || undefined} className="w-full h-full object-cover" alt="" />
                         </button>
                       ))}
                     </div>
@@ -297,9 +304,24 @@ export default function SettingsModal({
                   <span className="font-mono text-xs text-slate-500">Username: @{currentUser.username}</span>
                   <button
                     type="submit"
-                    className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-black font-extrabold rounded-lg cursor-pointer transition-colors shadow-lg shadow-emerald-500/5 hover:scale-[1.01]"
+                    disabled={saving}
+                    className={`px-4 py-2 text-black font-extrabold rounded-lg transition-all duration-200 shadow-lg flex items-center gap-2 hover:scale-[1.01] ${
+                      successSaved
+                        ? 'bg-[#10B981] cursor-default'
+                        : saving
+                          ? 'bg-emerald-600/80 cursor-not-allowed text-black/70'
+                          : 'bg-emerald-500 hover:bg-emerald-400 cursor-pointer'
+                    }`}
                   >
-                    {saving ? 'Syncing...' : 'Save Sync Settings'}
+                    {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                    {successSaved && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                    <span>
+                      {saving
+                        ? 'Syncing to Cloud...'
+                        : successSaved
+                          ? 'Synced & Saved!'
+                          : 'Save Sync Settings'}
+                    </span>
                   </button>
                 </div>
               </form>
@@ -341,7 +363,11 @@ export default function SettingsModal({
                     <input
                       type="checkbox"
                       checked={readReceipts}
-                      onChange={() => setReadReceipts(!readReceipts)}
+                      onChange={() => {
+                        const newVal = !readReceipts;
+                        setReadReceipts(newVal);
+                        onUpdateUser(currentUser.id, { readReceipts: newVal });
+                      }}
                       className="accent-emerald-500 h-4 w-4 ml-4 cursor-pointer"
                     />
                   </div>
